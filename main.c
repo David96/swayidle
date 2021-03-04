@@ -47,6 +47,7 @@ struct swayidle_timeout_cmd {
 	struct org_kde_kwin_idle_timeout *idle_timer;
 	char *idle_cmd;
 	char *resume_cmd;
+	char *cond_cmd;
 	bool idlehint;
 	bool resume_pending;
 };
@@ -104,6 +105,7 @@ static void swayidle_finish() {
 		wl_list_remove(&cmd->link);
 		free(cmd->idle_cmd);
 		free(cmd->resume_cmd);
+		free(cmd->cond_cmd);
 		free(cmd);
 	}
 
@@ -118,7 +120,7 @@ void sway_terminate(int exit_code) {
 	exit(exit_code);
 }
 
-static void cmd_exec(char *param) {
+static int cmd_exec(char *param) {
 	swayidle_log(LOG_DEBUG, "Cmd exec %s", param);
 	pid_t pid = fork();
 	if (pid == 0) {
@@ -137,9 +139,12 @@ static void cmd_exec(char *param) {
 		exit(0);
 	} else if (pid < 0) {
 		swayidle_log_errno(LOG_ERROR, "fork failed");
+		return pid;
 	} else {
 		swayidle_log(LOG_DEBUG, "Spawned process %s", param);
-		waitpid(pid, NULL, 0);
+		int status;
+		waitpid(pid, &status, 0);
+		return status;
 	}
 }
 
@@ -600,8 +605,12 @@ static void handle_idle(void *data, struct org_kde_kwin_idle_timeout *timer) {
 		set_idle_hint(true);
 	} else
 #endif
-	if (cmd->idle_cmd) {
-		cmd_exec(cmd->idle_cmd);
+	if (!cmd->cond_cmd || cmd_exec(cmd->cond_cmd) == 0) {
+		if (cmd->idle_cmd) {
+			cmd_exec(cmd->idle_cmd);
+		}
+	} else {
+		register_timeout(cmd, cmd->timeout);
 	}
 }
 
@@ -675,10 +684,15 @@ static int parse_timeout(int argc, char **argv) {
 	cmd->idle_cmd = parse_command(argc - 2, &argv[2]);
 
 	int result = 3;
-	if (argc >= 5 && !strcmp("resume", argv[3])) {
+	if (argc >= result + 2 && !strcmp("if", argv[result])) {
+		swayidle_log(LOG_DEBUG, "Setup if");
+		cmd->cond_cmd = parse_command(argc - (result + 1), &argv[result + 1]);
+		result += 2;
+	}
+	if (argc >= result + 2 && !strcmp("resume", argv[result])) {
 		swayidle_log(LOG_DEBUG, "Setup resume");
-		cmd->resume_cmd = parse_command(argc - 4, &argv[4]);
-		result = 5;
+		cmd->resume_cmd = parse_command(argc - (result + 1), &argv[result + 1]);
+		result += 2;
 	}
 	wl_list_insert(&state.timeout_cmds, &cmd->link);
 	return result;
